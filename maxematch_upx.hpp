@@ -349,8 +349,13 @@ class MaxEdgeMatchUPX
             // get displacement
             GraphElem tdisp = rdispls_[target] + scounts_[target];
 
+            #if USE_PROMISE
+            upcxx::rput(&qbuf_[index], gptrs_[target] + tdisp, 3,
+                        upcxx::operation_cx::as_promise(prom_));
+            #else
             futs_ = upcxx::when_all(futs_,
                     upcxx::rput(&qbuf_[index], gptrs_[target] + tdisp, 3));
+            #endif
             
             scounts_[target] += 3;
         }
@@ -468,8 +473,13 @@ class MaxEdgeMatchUPX
             /* Part 2 -- compute mate */
             while(1)
             {
+                #if USE_PROMISE
+                prom_.finalize().wait();
+                prom_ = upcxx::promise<>();
+                #else
                 futs_.wait();
                 futs_ = upcxx::make_future();
+                #endif
 
                 process_window();
                 do_matching();
@@ -678,6 +688,9 @@ class MaxEdgeMatchUPX
 
         // global ptrs to each of my neighbor's data
         std::unordered_map< GraphElem, upcxx::global_ptr<GraphElem> > gptrs_;
+        #if USE_PROMISE
+        upcxx::promise<> prom_;
+        #endif
         upcxx::future<> futs_;
 
         std::vector<int> targets_; // neighbor processes

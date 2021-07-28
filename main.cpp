@@ -31,6 +31,7 @@ static bool randomNumberLCG = false;
 static bool readBalanced = false;
 static double threshold = 1.0E-6;
 static bool isUnitEdgeWeight = true;
+static std::string outputFileName;
 
 // parse command line parameters
 static void parseCommandLine(const int argc, char * const argv[]);
@@ -67,7 +68,7 @@ int main(int argc, char *argv[])
 
     if (generateGraph) 
     { 
-        GenerateRGG gr(nvRGG);
+        GenerateRGG gr(nvRGG, MPI_COMM_WORLD, outputFileName);
         g = gr.generate(randomNumberLCG, isUnitEdgeWeight, randomEdgePercent);
 
         if (me == 0) 
@@ -192,7 +193,7 @@ void parseCommandLine(const int argc, char * const argv[])
 {
   int ret;
 
-  while ((ret = getopt(argc, argv, "f:br:t:n:wlp:")) != -1) {
+  while ((ret = getopt(argc, argv, "f:br:t:n:wlp:o:")) != -1) {
     switch (ret) {
     case 'f':
       inputFileName.assign(optarg);
@@ -219,6 +220,9 @@ void parseCommandLine(const int argc, char * const argv[])
       break;
     case 'p':
       randomEdgePercent = atoi(optarg);
+      break;
+    case 'o':
+      outputFileName.assign(optarg);
       break;
     default:
       assert(0 && "Should not reach here!!");

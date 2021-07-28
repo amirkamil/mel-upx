@@ -608,10 +608,11 @@ class BinaryEdgeList
 class GenerateRGG
 {
     public:
-        GenerateRGG(GraphElem nv, MPI_Comm comm = MPI_COMM_WORLD)
+        GenerateRGG(GraphElem nv, MPI_Comm comm = MPI_COMM_WORLD, std::string fileOut="")
         {
             nv_ = nv;
             comm_ = comm;
+            fileOut_ = fileOut;
 
             MPI_Comm_rank(comm_, &rank_);
             MPI_Comm_size(comm_, &nprocs_);
@@ -751,6 +752,11 @@ class GenerateRGG
                 }
 #endif
             }
+
+            // create an global edge count vector
+            std::vector<GraphElem> edgeCount;
+            if (!fileOut_.empty())
+                edgeCount.resize(nv_+1);
                  
             double et = MPI_Wtime();
             double tt = et - st;
@@ -807,6 +813,11 @@ class GenerateRGG
 
                         g->edge_indices_[i+1]++;
                         g->edge_indices_[j+1]++;
+
+                        if (!fileOut_.empty()) {
+                            edgeCount[g_i+1]++;
+                            edgeCount[g_j+1]++;
+                        }
                     }
                 }
             }
@@ -859,6 +870,8 @@ class GenerateRGG
                                 numEdges++;
 #endif
                                 g->edge_indices_[i+1]++;
+                                if (!fileOut_.empty())
+                                    edgeCount[g_i+1]++;
                             }
                         }
                     }
@@ -891,6 +904,8 @@ class GenerateRGG
                                 numEdges++;
 #endif
                                 g->edge_indices_[i+1]++;
+                                if (!fileOut_.empty())
+                                    edgeCount[g_i+1]++;
                             }
                         }
                     }
@@ -941,6 +956,8 @@ class GenerateRGG
                     else
                         edgeList.emplace_back(recvdn_edges[i].ij_[0], recvdn_edges[i].ij_[1]);
                     g->edge_indices_[recvdn_edges[i].ij_[0]+1]++; 
+                    if (!fileOut_.empty())
+                        edgeCount[g->local_to_global(recvdn_edges[i].ij_[0], rank_)+1]++;
                 } 
             }
 
@@ -955,6 +972,8 @@ class GenerateRGG
                     else
                         edgeList.emplace_back(recvup_edges[i].ij_[0], recvup_edges[i].ij_[1]);
                     g->edge_indices_[recvup_edges[i].ij_[0]+1]++; 
+                    if (!fileOut_.empty())
+                        edgeCount[g->local_to_global(recvup_edges[i].ij_[0], rank_)+1]++;
                 }
             }
             
@@ -1074,6 +1093,8 @@ class GenerateRGG
 #endif                       
                         edgeList.emplace_back(i, g_j, weight);
                         g->edge_indices_[i+1]++;
+                        if (!fileOut_.empty())
+                            edgeCount[g_i+1]++;
                     }
                 }
                 
@@ -1136,6 +1157,8 @@ class GenerateRGG
 #endif
                     edgeList.emplace_back(recvrand_edges[i].ij_[0], recvrand_edges[i].ij_[1], recvrand_edges[i].w_);
                     g->edge_indices_[recvrand_edges[i].ij_[0]+1]++; 
+                    if (!fileOut_.empty())
+                        edgeCount[g->local_to_global(recvrand_edges[i].ij_[0], rank_)+1]++;
                 }
 
                 sendrand_edges.clear();
@@ -1211,6 +1234,14 @@ class GenerateRGG
             const GraphElem tne = g->get_ne();
             assert(tne == tot_numEdges);
 #endif
+
+            // write file
+            if (!fileOut_.empty()) {
+                writeGraph(rank_, nprocs_, g, edgeCount, fileOut_);
+                if (rank_ == 0)
+                    std::cout << "Written binary file: " << fileOut_ << std::endl;
+            }
+
             edgeList.clear();
             
             X.clear();
@@ -1231,11 +1262,93 @@ class GenerateRGG
         GraphWeight get_d() const { return rn_; }
         GraphElem get_nv() const { return nv_; }
 
+        // write graph in CSR binary format
+        static void writeGraph(int me, int nprocs, Graph *&gptr, std::vector<GraphElem>& edgeCount, std::string &fileName)
+        {
+            MPI_File fh;
+            MPI_Status status;
+            GraphElem globalNumEdges = 0, globalNumVertices = gptr->get_nv();
+
+            Graph &g = *gptr;
+            GraphElem my_nedges = g.edge_list_.size();
+            MPI_Allreduce(&my_nedges, &globalNumEdges, 1, MPI_GRAPH_TYPE, MPI_SUM, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, edgeCount.data(), globalNumVertices+1, MPI_GRAPH_TYPE, MPI_SUM, MPI_COMM_WORLD);
+            std::vector<GraphElem> ecTmp(globalNumVertices+1);
+            std::partial_sum(edgeCount.begin(), edgeCount.end(), ecTmp.begin());
+
+            int file_open_error = MPI_File_open(MPI_COMM_WORLD, fileName.c_str(),
+                  MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &fh);
+
+            if (file_open_error != MPI_SUCCESS) {
+                std::cout<< " Error opening output binary file for storing graph data! " << std::endl;
+                MPI_Abort(MPI_COMM_WORLD, -99);
+            }
+
+            // output file stores #vertices and #edges
+            if (me == 0) {
+                MPI_File_write_at(fh, 0, &globalNumVertices, sizeof(GraphElem), MPI_BYTE, &status);
+                MPI_File_write_at(fh, sizeof(GraphElem), &globalNumEdges, sizeof(GraphElem), MPI_BYTE, &status);
+
+                uint64_t tot_bytes=(globalNumVertices+1)*sizeof(GraphElem);
+                MPI_Offset offset = 2*sizeof(GraphElem);
+
+                if (tot_bytes<INT_MAX)
+                    MPI_File_write_at(fh, offset, ecTmp.data(), tot_bytes, MPI_BYTE, &status);
+                else {
+                    int chunk_bytes=INT_MAX;
+                    uint8_t *curr_pointer = (uint8_t*) ecTmp.data();
+                    uint64_t transf_bytes=0;
+
+                    while (transf_bytes<tot_bytes)
+                    {
+                        MPI_File_write_at(fh, offset, curr_pointer, chunk_bytes, MPI_BYTE, &status);
+                        transf_bytes+=chunk_bytes;
+                        offset+=chunk_bytes;
+                        curr_pointer+=chunk_bytes;
+
+                        if (tot_bytes-transf_bytes<INT_MAX)
+                            chunk_bytes=tot_bytes-transf_bytes;
+                    }
+                }
+            }
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            GraphElem hi_idx = ((globalNumVertices * (me + 1)) / nprocs);
+            GraphElem lo_idx = ((globalNumVertices * me) / nprocs);
+
+            GraphElem localNumEdges = ecTmp[hi_idx]-ecTmp[lo_idx];
+            uint64_t tot_bytes=localNumEdges*(sizeof(Edge));
+            MPI_Offset offset = 2*sizeof(GraphElem) + (globalNumVertices+1)*sizeof(GraphElem) + ecTmp[lo_idx]*(sizeof(Edge));
+
+            if (tot_bytes<INT_MAX)
+                MPI_File_write_at(fh, offset, &g.edge_list_[0], tot_bytes, MPI_BYTE, &status);
+            else {
+                int chunk_bytes=INT_MAX;
+                uint8_t *curr_pointer = (uint8_t*)&g.edge_list_[0];
+                uint64_t transf_bytes=0;
+
+                while (transf_bytes<tot_bytes)
+                {
+                    MPI_File_write_at(fh, offset, curr_pointer, chunk_bytes, MPI_BYTE, &status);
+                    transf_bytes+=chunk_bytes;
+                    offset+=chunk_bytes;
+                    curr_pointer+=chunk_bytes;
+
+                    if (tot_bytes-transf_bytes<INT_MAX)
+                        chunk_bytes=tot_bytes-transf_bytes;
+                }
+            }
+
+            MPI_File_close(&fh);
+        }
+
     private:
         GraphElem nv_, n_;
         GraphWeight rn_;
         MPI_Comm comm_;
         int nprocs_, rank_, up_, down_;
+        std::string fileOut_;
 };
 
 #endif
