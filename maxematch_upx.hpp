@@ -358,6 +358,10 @@ class MaxEdgeMatchUPX
             #endif
             
             scounts_[target] += 3;
+
+            #if REPORT_COMM_COUNTS
+            ++nputs_;
+            #endif
         }
         
         // search v in M_ (local list
@@ -574,6 +578,9 @@ class MaxEdgeMatchUPX
                         deactivate_edge(y, x);
                         deactivate_edge(x, y);
                     }
+                    #if REPORT_COMM_COUNTS
+                    ++nlocal_mate_requests_;
+                    #endif
                 }
                 else // ghost, initate REQUEST
                 {
@@ -581,6 +588,9 @@ class MaxEdgeMatchUPX
 
                     GraphElem y_x[2] = {y, x};
                     NbPut(MATE_REQUEST, y_owner, y_x);  
+                    #if REPORT_COMM_COUNTS
+                    ++nremote_mate_requests_;
+                    #endif
                 }
             }
             else // invalidate all neigboring vertices 
@@ -600,14 +610,21 @@ class MaxEdgeMatchUPX
                         
                         const int z_owner = g_->get_owner(z);
                         
-                        if (z_owner == rank_)
+                        if (z_owner == rank_) {
                             deactivate_edge(z, x);
+                            #if REPORT_COMM_COUNTS
+                            ++nlocal_mate_invalidates_;
+                            #endif
+                        }
                         else // ghost, initiate INVALID
                         {
                             ghost_count_[lx] -= 1;
                             
                             GraphElem z_x[2] = {z, x};
                             NbPut(MATE_INVALID, z_owner, z_x);  
+                            #if REPORT_COMM_COUNTS
+                            ++nremote_mate_invalidates_;
+                            #endif
                         }
                     }
                 }
@@ -664,6 +681,14 @@ class MaxEdgeMatchUPX
                 }   
             }
         }
+
+        #if REPORT_COMM_COUNTS
+        long long nputs_ = 0;
+        long long nlocal_mate_requests_ = 0;
+        long long nremote_mate_requests_ = 0;
+        long long nlocal_mate_invalidates_ = 0;
+        long long nremote_mate_invalidates_ = 0;
+        #endif
 
     private:
         Graph* g_;

@@ -155,6 +155,23 @@ int main(int argc, char *argv[])
         std::cout << "Execution time (in s) for maximal edge matching: " 
             << (double)(t_tot/(double)nprocs) << std::endl;
 
+    #if REPORT_COMM_COUNTS
+    long long ncomms[] = {
+        mt.nputs_, mt.nlocal_mate_requests_, mt.nremote_mate_requests_,
+        mt.nlocal_mate_invalidates_, mt.nremote_mate_invalidates_
+    };
+    long long ncomms_tots[5] = {};
+    MPI_Reduce(ncomms, ncomms_tots, 5, MPI_LONG_LONG_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (me == 0) {
+        std::cout << "Total # of puts: " << ncomms_tots[0]
+                  << "\nTotal # of local requests: " << ncomms_tots[1]
+                  << "\nTotal # of remote requests: " << ncomms_tots[2]
+                  << "\nTotal # of local invalidates: " << ncomms_tots[3]
+                  << "\nTotal # of remote invalidates: " << ncomms_tots[4]
+                  << std::endl;
+    }
+    #endif
+
 #if defined(CHECK_RESULTS)    
     mt.check_results();
 #endif
